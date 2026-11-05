@@ -1,3 +1,4 @@
+
 name: Pokemon Stock Monitor
 
 on:
@@ -13,6 +14,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Test Telegram
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=Prueba correcta: GitHub puede enviarte avisos."
+
       - name: Prepare Python
         uses: actions/setup-python@v5
         with:
@@ -22,12 +34,8 @@ jobs:
         run: pip install requests beautifulsoup4
 
       - name: Check shops
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python - <<'PY'
-          import os
           import requests
           from bs4 import BeautifulSoup
 
@@ -35,23 +43,6 @@ jobs:
               "GAME": "https://www.game.es/caja-ultra-premium-de-cartas-pokemon-30-aniversario-castellano-surtido/266954",
               "Carrefour": "https://www.carrefour.es/pokemon-caja-ultra-premium-30th-aniversario-6-anos-unboxing/VC4A-34535253/p"
           }
-
-          positives = [
-              "añadir al carrito",
-              "añadir a la cesta",
-              "en stock",
-              "disponible",
-              "comprar"
-          ]
-
-          negatives = [
-              "agotado",
-              "sin stock",
-              "no disponible",
-              "temporalmente no disponible"
-          ]
-
-          alerts = []
 
           for shop, url in shops.items():
               try:
@@ -62,29 +53,13 @@ jobs:
                   )
                   response.raise_for_status()
 
-                  text = BeautifulSoup(
+                  page = BeautifulSoup(
                       response.text, "html.parser"
                   ).get_text(" ", strip=True).lower()
 
-                  if any(word in text for word in negatives):
-                      print(f"{shop}: sin disponibilidad confirmada")
-                  elif any(word in text for word in positives):
-                      print(f"{shop}: posible disponibilidad")
-                      alerts.append(f"{shop}: posible stock\n{url}")
-                  else:
-                      print(f"{shop}: estado desconocido")
+                  print(f"{shop}: página consultada.")
+                  print(f"Texto recibido: {page[:1000]}")
 
               except Exception as error:
-                  print(f"Error en {shop}: {error}")
-
-          token = os.environ.get("TELEGRAM_BOT_TOKEN")
-          chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-
-          if alerts and token and chat_id:
-              message = "🎉 Posible stock de Pokémon:\n\n" + "\n\n".join(alerts)
-              requests.post(
-                  f"https://api.telegram.org/bot{token}/sendMessage",
-                  data={"chat_id": chat_id, "text": message},
-                  timeout=20
-              ).raise_for_status()
+                  print(f"{shop}: error de consulta: {error}")
           PY
