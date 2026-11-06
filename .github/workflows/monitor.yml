@@ -12,54 +12,64 @@ permissions:
 jobs:
   check-stock:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Test Telegram
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          curl --fail-with-body -sS -X POST \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=Prueba correcta: GitHub puede enviarte avisos."
-
       - name: Prepare Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Install libraries
         run: pip install requests beautifulsoup4
 
-      - name: Check shops
+      - name: Inspect GAME availability
         run: |
           python - <<'PY'
           import requests
           from bs4 import BeautifulSoup
+          import re
 
-          shops = {
-              "GAME": "https://www.game.es/caja-ultra-premium-de-cartas-pokemon-30-aniversario-castellano-surtido/266954",
-              "Carrefour": "https://www.carrefour.es/pokemon-caja-ultra-premium-30th-aniversario-6-anos-unboxing/VC4A-34535253/p"
-          }
+          url = "https://www.game.es/caja-ultra-premium-de-cartas-pokemon-30-aniversario-castellano-surtido/266954"
 
-          for shop, url in shops.items():
-              try:
-                  response = requests.get(
-                      url,
-                      headers={"User-Agent": "Mozilla/5.0"},
-                      timeout=20
-                  )
-                  response.raise_for_status()
+          try:
+              response = requests.get(
+                  url,
+                  headers={"User-Agent": "Mozilla/5.0"},
+                  timeout=20
+              )
+              response.raise_for_status()
 
-                  page = BeautifulSoup(
-                      response.text, "html.parser"
-                  ).get_text(" ", strip=True).lower()
+              soup = BeautifulSoup(response.text, "html.parser")
 
-                  print(f"{shop}: página consultada.")
-                  print(f"Texto recibido: {page[:1000]}")
+              print("ESTADO HTTP:", response.status_code)
 
-              except Exception as error:
-                  print(f"{shop}: error de consulta: {error}")
+              print("\n--- INDICADORES EN EL TEXTO ---")
+              text = soup.get_text(" ", strip=True).lower()
+
+              terms = [
+                  "avisa cuando haya stock",
+                  "añadir al carrito",
+                  "añadir",
+                  "agotado",
+                  "sin stock",
+                  "disponible",
+                  "no disponible",
+                  "consulta disponibilidad"
+              ]
+
+              for term in terms:
+                  positions = [
+                      m.start() for m in re.finditer(
+                          re.escape(term), text
+                      )
+                  ]
+                  print(f"{term}: {len(positions)} coincidencias")
+                  for position in positions[:2]:
+                      print(text[max(0, position-150):position+250])
+
+              print("\n--- DATOS DE PRODUCTO ---")
+              for tag in soup.find_all("script", type="application/ld+json"):
+                  print(tag.get_text()[:3000])
+
+          except Exception as error:
+              print("ERROR:", error)
           PY
