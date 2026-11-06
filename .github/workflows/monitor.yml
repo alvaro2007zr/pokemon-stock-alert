@@ -7,69 +7,120 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   check-stock:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Prepare Python
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - name: Install libraries
+      - name: Instalar librerías
         run: pip install requests beautifulsoup4
 
-      - name: Inspect GAME availability
+      - name: Comprobar GAME y avisar
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python - <<'PY'
+          import os
+          import json
           import requests
           from bs4 import BeautifulSoup
-          import re
 
           url = "https://www.game.es/caja-ultra-premium-de-cartas-pokemon-30-aniversario-castellano-surtido/266954"
+          state_file = "game_stock_state.txt"
+
+          headers = {"User-Agent": "Mozilla/5.0"}
 
           try:
-              response = requests.get(
-                  url,
-                  headers={"User-Agent": "Mozilla/5.0"},
-                  timeout=20
-              )
+              response = requests.get(url, headers=headers, timeout=25)
               response.raise_for_status()
-
               soup = BeautifulSoup(response.text, "html.parser")
-
-              print("ESTADO HTTP:", response.status_code)
-
-              print("\n--- INDICADORES EN EL TEXTO ---")
               text = soup.get_text(" ", strip=True).lower()
 
-              terms = [
-                  "avisa cuando haya stock",
-                  "añadir al carrito",
-                  "añadir",
-                  "agotado",
-                  "sin stock",
-                  "disponible",
-                  "no disponible",
-                  "consulta disponibilidad"
-              ]
+              available = False
 
-              for term in terms:
-                  positions = [
-                      m.start() for m in re.finditer(
-                          re.escape(term), text
-                      )
-                  ]
-                  print(f"{term}: {len(positions)} coincidencias")
-                  for position in positions[:2]:
-                      print(text[max(0, position-150):position+250])
+              # Buscar disponibilidad explícita en los datos estructurados.
+              def inspect_json(data):
+                  global available
+                  if isinstance(data, dict):
+                      availability = str(data.get("availability", "")).lower()
+                      if availability.endswith("instock") or "instock" in availability:
+                          available = True
+                      for value in data.values():
+                          inspect_json(value)
+                  elif isinstance(data, list):
+                      for value in data:
+                          inspect_json(value)
 
-              print("\n--- DATOS DE PRODUCTO ---")
               for tag in soup.find_all("script", type="application/ld+json"):
-                  print(tag.get_text()[:3000])
+                  try:
+                      inspect_json(json.loads(tag.string or tag.get_text()))
+                  except (json.JSONDecodeError, TypeError):
+                      pass
+
+              # Comprobar botones de compra, no palabras sueltas de la descripción.
+              for element in soup.find_all(["button", "a"]):
+                  label = element.get_text(" ", strip=True).lower()
+                  if any(term in label for term in [
+                      "añadir al carrito",
+                      "añadir a la cesta",
+                      "comprar ahora"
+                  ]):
+                      available = True
+
+              if "agotado" in text:
+                  available = False
+
+              previous = "unknown"
+              if os.path.exists(state_file):
+                  with open(state_file, "r") as file:
+                      previous = file.read().strip()
+
+              current = "available" if available else "not_available"
+
+              print("GAME:", current)
+              print("Estado anterior:", previous)
+
+              if current == "available" and previous != "available":
+                  message = (
+                      "¡GAME podría tener stock de la Caja Ultra Premium "
+                      "Pokémon 30.º Aniversario!\n\n"
+                      "Comprueba la disponibilidad aquí:\n" + url
+                  )
+
+                  result = requests.post(
+                      f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+                      data={
+                          "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+                          "text": message
+                      },
+                      timeout=20
+                  )
+                  result.raise_for_status()
+                  print("Aviso enviado a Telegram.")
+
+              with open(state_file, "w") as file:
+                  file.write(current)
 
           except Exception as error:
-              print("ERROR:", error)
+              print("No se ha podido comprobar GAME:", error)
+              raise
           PY
+
+      - name: Guardar estado
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add game_stock_state.txt
+          git diff --cached --quiet || git commit -m "Actualizar estado de stock"
+          git push
